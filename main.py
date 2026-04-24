@@ -1058,3 +1058,56 @@ async def post_intent(inp: IntentIn):
                     row["strategy_tag"],
                     row["max_fee_bps"],
                     row["created_ms"],
+                    row["cancel_earliest_ms"],
+                    row["status"],
+                    row["filled_input"],
+                    row["risk_code"],
+                    row["risk_at_ms"],
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise ApiErr(409, "intent_exists", "Intent already exists for maker nonce", {"maker_id": inp.maker_id, "nonce": inp.nonce})
+        await c.commit()
+
+    out = IntentOut(
+        intent_id=row["intent_id"],
+        maker_id=row["maker_id"],
+        maker_addr=row["maker_addr"],
+        input_token=row["input_token"],
+        input_amount=inp.input_amount,
+        output_token=row["output_token"],
+        min_output_amount=inp.min_output_amount,
+        dst_chain_id=row["dst_chain_id"],
+        dst_receiver=row["dst_receiver"],
+        expiry_ms=row["expiry_ms"],
+        nonce=row["nonce"],
+        strategy_tag=row["strategy_tag"],
+        max_fee_bps=row["max_fee_bps"],
+        created_ms=row["created_ms"],
+        cancel_earliest_ms=row["cancel_earliest_ms"],
+        status=row["status"],
+        filled_input=0,
+        risk_code=0,
+        risk_at_ms=0,
+    )
+    await DB.audit("intent_post", out.model_dump())
+    await HUB.broadcast("intent_post", out.model_dump())
+    return out
+
+
+@app.get("/intents", response_model=list[IntentOut])
+async def list_intents(status: str = "open", limit: int = 50, offset: int = 0):
+    limit, offset = _page_params(limit, offset)
+    if status not in ("open", "filled", "expired", "cancelled"):
+        raise ApiErr(400, "bad_status", "Unknown status", {"status": status})
+    async with await DB.connect() as c:
+        cur = await c.execute(
+            "SELECT * FROM intents WHERE status=? ORDER BY created_ms DESC LIMIT ? OFFSET ?",
+            (status, limit, offset),
+        )
+        rows = await cur.fetchall()
+    return [await _intent_row_to_out(r) for r in rows]
+
+
+@app.get("/intent/{intent_id}", response_model=IntentOut)
+async def get_intent(intent_id: str):
