@@ -475,3 +475,56 @@ class WsHub:
         self._lock = asyncio.Lock()
 
     async def add(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._clients.add(ws)
+
+    async def remove(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._clients.discard(ws)
+
+    async def broadcast(self, kind: str, payload: dict) -> None:
+        env = WsEnvelope(kind=kind, at_ms=_now_ms(), payload=payload)
+        data = orjson.dumps(env.model_dump(), option=orjson.OPT_NON_STR_KEYS)
+        dead: list[WebSocket] = []
+        async with self._lock:
+            for ws in list(self._clients):
+                if ws.application_state != WebSocketState.CONNECTED:
+                    dead.append(ws)
+                    continue
+                try:
+                    await ws.send_bytes(data)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                self._clients.discard(ws)
+
+
+HUB = WsHub()
+
+
+class BridgeSim:
+    def __init__(self):
+        self._rng = random.Random(secrets.randbits(64))
+
+    async def submit(self, intent_id: str, dst_chain_id: int, receiver: str, route_tag: str) -> dict:
+        delay = self._rng.randint(CFG.bridge_sim_latency_ms_min, CFG.bridge_sim_latency_ms_max)
+        await asyncio.sleep(delay / 1000.0)
+        msg = {
+            "bridge_msg_id": "br_" + uuid.uuid4().hex,
+            "intent_id": intent_id,
+            "dst_chain_id": dst_chain_id,
+            "receiver": receiver,
+            "route_tag": route_tag,
+            "latency_ms": delay,
+            "observed_at": _utc_iso(),
+        }
+        return msg
+
+
+BRIDGE = BridgeSim()
+
+
+def _calc_fee(receive_amount: int, max_fee_bps: int, protocol_fee_bps: int = 19) -> tuple[int, int]:
+    bps = min(max_fee_bps, protocol_fee_bps)
+    fee = (receive_amount * bps) // 10_000
+    fee = min(fee, receive_amount)
