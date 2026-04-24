@@ -1005,3 +1005,56 @@ async def vault_list(user_id: str):
 async def post_intent(inp: IntentIn):
     await _ensure_user(inp.maker_id)
     now = _now_ms()
+    if inp.expiry_ms <= now:
+        raise ApiErr(400, "expired", "expiry_ms must be in the future")
+    if inp.expiry_ms - now > 9 * 24 * 3600 * 1000:
+        raise ApiErr(400, "too_long", "expiry too far in the future")
+    if inp.input_amount <= 0 or inp.min_output_amount <= 0:
+        raise ApiErr(400, "bad_amount", "amounts must be positive")
+    bal = await _vault_get(inp.maker_id, inp.input_token)
+    if bal < inp.input_amount:
+        raise ApiErr(400, "vault_low", "Insufficient maker vault balance", {"need": inp.input_amount, "have": bal})
+
+    created = now
+    cancel_earliest = now + (8 * 60 * 1000)
+    row = {
+        "intent_id": inp.intent_id,
+        "maker_id": inp.maker_id,
+        "maker_addr": inp.maker_addr,
+        "input_token": inp.input_token,
+        "input_amount": _as_str_int(inp.input_amount),
+        "output_token": inp.output_token,
+        "min_output_amount": _as_str_int(inp.min_output_amount),
+        "dst_chain_id": int(inp.dst_chain_id),
+        "dst_receiver": inp.dst_receiver,
+        "expiry_ms": int(inp.expiry_ms),
+        "nonce": int(inp.nonce),
+        "strategy_tag": inp.strategy_tag,
+        "max_fee_bps": int(inp.max_fee_bps),
+        "created_ms": created,
+        "cancel_earliest_ms": cancel_earliest,
+        "status": "open",
+        "filled_input": "0",
+        "risk_code": 0,
+        "risk_at_ms": 0,
+    }
+    async with await DB.connect() as c:
+        try:
+            await c.execute(
+                "INSERT INTO intents(intent_id,maker_id,maker_addr,input_token,input_amount,output_token,min_output_amount,dst_chain_id,dst_receiver,expiry_ms,nonce,strategy_tag,max_fee_bps,created_ms,cancel_earliest_ms,status,filled_input,risk_code,risk_at_ms) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["intent_id"],
+                    row["maker_id"],
+                    row["maker_addr"],
+                    row["input_token"],
+                    row["input_amount"],
+                    row["output_token"],
+                    row["min_output_amount"],
+                    row["dst_chain_id"],
+                    row["dst_receiver"],
+                    row["expiry_ms"],
+                    row["nonce"],
+                    row["strategy_tag"],
+                    row["max_fee_bps"],
+                    row["created_ms"],
