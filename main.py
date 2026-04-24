@@ -1217,3 +1217,56 @@ async def quote(req: QuoteRequest):
     }
     mac = mk_hmac(_stable_json(payload))
     out = QuoteResponse(**payload, mac=mac)
+    await DB.audit("quote", payload)
+    return out
+
+
+class SubmitFill(BaseModel):
+    fill: FillIn
+    quote: QuoteResponse
+
+
+@app.post("/fill", response_model=FillOut)
+async def submit_fill(body: SubmitFill, background: BackgroundTasks):
+    payload = body.quote.model_dump()
+    mac = body.quote.mac
+    if not verify_hmac(_stable_json({k: payload[k] for k in payload if k != "mac"} | {}), mac):
+        # tolerate old-style serialization mismatch by recomputing on canonical fields
+        canonical = {k: payload[k] for k in payload if k != "mac"}
+        if not verify_hmac(_stable_json(canonical), mac):
+            raise ApiErr(400, "bad_quote", "Invalid quote MAC")
+    if payload["expires_ms"] < _now_ms():
+        raise ApiErr(400, "quote_expired", "Quote expired")
+    if payload["intent_id"] != body.fill.intent_id or payload["route_tag"] != body.fill.route_tag or payload["filler_id"] != body.fill.filler_id:
+        raise ApiErr(400, "quote_mismatch", "Quote does not match fill")
+    if payload["pay_amount"] != body.fill.pay_amount or payload["receive_amount"] != body.fill.receive_amount:
+        raise ApiErr(400, "quote_mismatch", "Quote amounts mismatch")
+
+    out = await apply_fill(body.fill, protocol_fee_bps=19)
+    await HUB.broadcast("fill_settled", out.model_dump())
+
+    # simulate bridge message post-fill
+    intent = await _get_intent(out.intent_id)
+    background.add_task(_bridge_notice, out.intent_id, int(intent["dst_chain_id"]), intent["dst_receiver"], out.route_tag)
+    return out
+
+
+async def _bridge_notice(intent_id: str, dst_chain_id: int, receiver: str, route_tag: str) -> None:
+    msg = await BRIDGE.submit(intent_id, dst_chain_id, receiver, route_tag)
+    await DB.audit("bridge_sim", msg)
+    await HUB.broadcast("bridge_sim", msg)
+
+
+@app.get("/fills", response_model=list[FillOut])
+async def list_fills(intent_id: str | None = None, limit: int = 50, offset: int = 0):
+    limit, offset = _page_params(limit, offset)
+    async with await DB.connect() as c:
+        if intent_id is None:
+            cur = await c.execute("SELECT * FROM fills ORDER BY created_ms DESC LIMIT ? OFFSET ?", (limit, offset))
+        else:
+            cur = await c.execute("SELECT * FROM fills WHERE intent_id=? ORDER BY created_ms DESC LIMIT ? OFFSET ?", (intent_id, limit, offset))
+        rows = await cur.fetchall()
+    return [await _fill_row_to_out(r) for r in rows]
+
+
+@app.websocket("/ws")
