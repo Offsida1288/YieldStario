@@ -263,3 +263,56 @@ class Db:
                       kind TEXT NOT NULL,
                       payload_json TEXT NOT NULL
                     );
+                    """
+                )
+                await c.commit()
+
+    async def audit(self, kind: str, payload: dict) -> None:
+        async with await self.connect() as c:
+            await c.execute(
+                "INSERT INTO audit(at_ms, kind, payload_json) VALUES(?,?,?)",
+                (_now_ms(), kind, json.dumps(payload, separators=(",", ":"), sort_keys=True)),
+            )
+            await c.commit()
+
+
+DB = Db(CFG.db_path)
+
+
+def _as_int(x: str) -> int:
+    return int(x, 10)
+
+
+def _as_str_int(x: int) -> str:
+    if x < 0:
+        raise ValueError("negative")
+    return str(x)
+
+
+class TokenIn(BaseModel):
+    token: str = Field(..., min_length=3, max_length=64)
+    symbol: str = Field(..., min_length=1, max_length=16)
+    decimals: int = Field(..., ge=0, le=36)
+
+
+class TokenOut(TokenIn):
+    updated_ms: int
+
+
+class UserIn(BaseModel):
+    label: str = Field(..., min_length=1, max_length=64)
+
+
+class UserOut(BaseModel):
+    user_id: str
+    label: str
+    created_ms: int
+
+
+class VaultDelta(BaseModel):
+    token: str
+    amount: int = Field(..., ge=1)
+
+
+class VaultRow(BaseModel):
+    user_id: str
