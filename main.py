@@ -528,3 +528,56 @@ def _calc_fee(receive_amount: int, max_fee_bps: int, protocol_fee_bps: int = 19)
     bps = min(max_fee_bps, protocol_fee_bps)
     fee = (receive_amount * bps) // 10_000
     fee = min(fee, receive_amount)
+    net = receive_amount - fee
+    return fee, net
+
+
+def _quote_score(route_score_bps: int, pay_amount: int, receive_amount: int) -> int:
+    if receive_amount <= 0:
+        return 0
+    px_bps = min(20_000, (pay_amount * 10_000) // receive_amount)
+    if route_score_bps <= 0:
+        route_score_bps = 5001
+    return (route_score_bps * 7 + px_bps * 3) // 10
+
+
+async def _ensure_user(user_id: str) -> None:
+    async with await DB.connect() as c:
+        cur = await c.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,))
+        row = await cur.fetchone()
+        if row:
+            return
+        raise ApiErr(404, "user_missing", f"Unknown user_id {user_id}")
+
+
+async def _get_intent(intent_id: str) -> aiosqlite.Row:
+    async with await DB.connect() as c:
+        cur = await c.execute("SELECT * FROM intents WHERE intent_id=?", (intent_id,))
+        row = await cur.fetchone()
+        if not row:
+            raise ApiErr(404, "intent_missing", "Intent not found", {"intent_id": intent_id})
+        return row
+
+
+async def _get_route(route_tag: str) -> aiosqlite.Row | None:
+    async with await DB.connect() as c:
+        cur = await c.execute("SELECT * FROM routes WHERE route_tag=?", (route_tag,))
+        return await cur.fetchone()
+
+
+async def _vault_get(user_id: str, token: str) -> int:
+    async with await DB.connect() as c:
+        cur = await c.execute("SELECT balance FROM vault WHERE user_id=? AND token=?", (user_id, token))
+        row = await cur.fetchone()
+        if not row:
+            return 0
+        return _as_int(row["balance"])
+
+
+async def _vault_set(user_id: str, token: str, new_balance: int) -> None:
+    async with await DB.connect() as c:
+        await c.execute(
+            "INSERT INTO vault(user_id, token, balance, updated_ms) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id, token) DO UPDATE SET balance=excluded.balance, updated_ms=excluded.updated_ms",
+            (user_id, token, _as_str_int(new_balance), _now_ms()),
+        )
