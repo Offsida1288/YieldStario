@@ -422,3 +422,56 @@ class FillOut(BaseModel):
     receive_token: str
     receive_amount: int
     src_chain_id: int
+    dst_chain_id: int
+    fill_deadline_ms: int
+    created_ms: int
+    fee_paid: int
+    status: str
+
+
+class RouteIn(BaseModel):
+    route_tag: str = Field(..., min_length=3, max_length=128)
+    dst_chain_id: int = Field(..., ge=1)
+    enabled: bool = True
+    risk_tier: int = Field(..., ge=0, le=65535)
+    latency_hint_sec: int = Field(..., ge=0, le=24 * 3600)
+    curator: str = Field(..., min_length=3, max_length=128)
+    score_bps: int = Field(..., ge=0, le=10000)
+
+
+class RouteOut(RouteIn):
+    updated_ms: int
+
+
+class QuoteRequest(BaseModel):
+    intent_id: str
+    route_tag: str
+    filler_id: str
+    pay_amount: int = Field(..., ge=1)
+    receive_amount: int = Field(..., ge=1)
+
+
+class QuoteResponse(BaseModel):
+    quote_id: str
+    intent_id: str
+    route_tag: str
+    filler_id: str
+    pay_amount: int
+    receive_amount: int
+    score_bps: int
+    expires_ms: int
+    mac: str
+
+
+class WsEnvelope(BaseModel):
+    kind: str
+    at_ms: int
+    payload: dict
+
+
+class WsHub:
+    def __init__(self):
+        self._clients: set[WebSocket] = set()
+        self._lock = asyncio.Lock()
+
+    async def add(self, ws: WebSocket) -> None:
