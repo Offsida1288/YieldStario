@@ -793,3 +793,56 @@ async def apply_fill(fill: FillIn, protocol_fee_bps: int) -> FillOut:
     rt = await _get_route(fill.route_tag)
     if rt is not None:
         if not bool(int(rt["enabled"])):
+            raise ApiErr(409, "route_disabled", "Route disabled")
+        if int(rt["dst_chain_id"]) != int(r["dst_chain_id"]):
+            raise ApiErr(400, "route_mismatch", "Route dst chain mismatch")
+        if int(rt["risk_tier"]) > 900:
+            raise ApiErr(409, "route_risky", "Route risk tier too high", {"risk_tier": int(rt["risk_tier"])})
+
+    if fill.pay_token != r["output_token"] or fill.receive_token != r["input_token"]:
+        raise ApiErr(400, "token_mismatch", "Fill tokens do not match intent")
+    if fill.dst_chain_id != int(r["dst_chain_id"]):
+        raise ApiErr(400, "chain_mismatch", "Fill dst chain does not match intent")
+
+    min_out = _as_int(r["min_output_amount"])
+    if fill.pay_amount < min_out:
+        raise ApiErr(400, "pay_too_low", "Pay amount below min_output_amount")
+
+    input_amount = _as_int(r["input_amount"])
+    filled = _as_int(r["filled_input"])
+    remain = max(0, input_amount - filled)
+    if fill.receive_amount > remain:
+        raise ApiErr(400, "overfill", "Receive amount exceeds remaining input", {"remain": remain})
+
+    # vault checks and movements
+    maker_id = r["maker_id"]
+    fee_paid, net = _calc_fee(fill.receive_amount, int(r["max_fee_bps"]), protocol_fee_bps=protocol_fee_bps)
+    if net <= 0:
+        raise ApiErr(400, "fee_too_high", "Net amount after fee is zero")
+
+    await _vault_add(maker_id, fill.receive_token, -fill.receive_amount)
+    await _vault_add(maker_id, fill.pay_token, +fill.pay_amount)
+
+    # persist fill + update intent
+    async with await DB.connect() as c:
+        await c.execute(
+            "INSERT INTO fills(fill_id,intent_id,filler_id,filler_addr,route_tag,pay_token,pay_amount,receive_token,receive_amount,src_chain_id,dst_chain_id,fill_deadline_ms,created_ms,fee_paid,status) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                fill.fill_id,
+                fill.intent_id,
+                fill.filler_id,
+                fill.filler_addr,
+                fill.route_tag,
+                fill.pay_token,
+                _as_str_int(fill.pay_amount),
+                fill.receive_token,
+                _as_str_int(fill.receive_amount),
+                int(fill.src_chain_id),
+                int(fill.dst_chain_id),
+                int(fill.fill_deadline_ms),
+                now,
+                _as_str_int(fee_paid),
+                "settled",
+            ),
+        )
