@@ -369,3 +369,56 @@ class IntentOut(BaseModel):
     expiry_ms: int
     nonce: int
     strategy_tag: str
+    max_fee_bps: int
+    created_ms: int
+    cancel_earliest_ms: int
+    status: str
+    filled_input: int
+    risk_code: int
+    risk_at_ms: int
+
+
+class FillIn(BaseModel):
+    intent_id: str
+    filler_id: str
+    filler_addr: str = Field(..., min_length=6, max_length=128)
+    route_tag: str = Field(..., min_length=3, max_length=128)
+    pay_token: str
+    pay_amount: int = Field(..., ge=1)
+    receive_token: str
+    receive_amount: int = Field(..., ge=1)
+    src_chain_id: int = Field(..., ge=1)
+    dst_chain_id: int = Field(..., ge=1)
+    fill_deadline_ms: int = Field(..., ge=1)
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def fill_id(self) -> str:
+        payload = _stable_json(
+            {
+                "intent_id": self.intent_id,
+                "filler_addr": self.filler_addr,
+                "route_tag": self.route_tag,
+                "pay_token": self.pay_token,
+                "pay_amount": self.pay_amount,
+                "receive_token": self.receive_token,
+                "receive_amount": self.receive_amount,
+                "src_chain_id": self.src_chain_id,
+                "dst_chain_id": self.dst_chain_id,
+                "fill_deadline_ms": self.fill_deadline_ms,
+            }
+        )
+        return "fl_" + _hash_bytes(payload)
+
+
+class FillOut(BaseModel):
+    fill_id: str
+    intent_id: str
+    filler_id: str
+    filler_addr: str
+    route_tag: str
+    pay_token: str
+    pay_amount: int
+    receive_token: str
+    receive_amount: int
+    src_chain_id: int
