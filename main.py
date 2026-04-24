@@ -846,3 +846,56 @@ async def apply_fill(fill: FillIn, protocol_fee_bps: int) -> FillOut:
                 "settled",
             ),
         )
+        nb_filled = filled + fill.receive_amount
+        new_status = "filled" if nb_filled >= input_amount else "open"
+        await c.execute(
+            "UPDATE intents SET filled_input=?, status=? WHERE intent_id=?",
+            (_as_str_int(nb_filled), new_status, fill.intent_id),
+        )
+        await c.commit()
+
+    await DB.audit(
+        "fill_settled",
+        {"fill_id": fill.fill_id, "intent_id": fill.intent_id, "fee_paid": fee_paid, "net": net, "at_ms": now},
+    )
+
+    out = FillOut(
+        fill_id=fill.fill_id,
+        intent_id=fill.intent_id,
+        filler_id=fill.filler_id,
+        filler_addr=fill.filler_addr,
+        route_tag=fill.route_tag,
+        pay_token=fill.pay_token,
+        pay_amount=fill.pay_amount,
+        receive_token=fill.receive_token,
+        receive_amount=fill.receive_amount,
+        src_chain_id=fill.src_chain_id,
+        dst_chain_id=fill.dst_chain_id,
+        fill_deadline_ms=fill.fill_deadline_ms,
+        created_ms=now,
+        fee_paid=fee_paid,
+        status="settled",
+    )
+    return out
+
+
+app = FastAPI(title=CFG.app_name, version="1.2.0", docs_url="/docs", redoc_url="/redoc")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(CFG.cors_origins) if CFG.cors_origins else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await DB.init()
+    await ENGINE.start()
+    LOG.info("startup ok db=%s cors=%s", CFG.db_path, CFG.cors_origins)
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await ENGINE.stop()
