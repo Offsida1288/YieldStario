@@ -687,3 +687,56 @@ class MatchEngine:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                LOG.exception("match tick error: %s", e)
+            await asyncio.sleep(CFG.match_tick_ms / 1000.0)
+        LOG.info("match loop stopped")
+
+    async def _tick(self) -> None:
+        now = _now_ms()
+        async with await DB.connect() as c:
+            # expire intents
+            await c.execute(
+                "UPDATE intents SET status='expired' WHERE status='open' AND expiry_ms < ?",
+                (now,),
+            )
+            # detect intents ready for fill (open & not risky)
+            cur = await c.execute(
+                "SELECT intent_id FROM intents WHERE status='open' AND risk_code=0 ORDER BY created_ms ASC LIMIT 70"
+            )
+            ids = [r["intent_id"] for r in await cur.fetchall()]
+            await c.commit()
+        for intent_id in ids:
+            await self._auto_fill_one(intent_id)
+
+    async def _auto_fill_one(self, intent_id: str) -> None:
+        r = await _get_intent(intent_id)
+        if r["status"] != "open":
+            return
+        maker_id = r["maker_id"]
+        input_token = r["input_token"]
+        input_amount = _as_int(r["input_amount"])
+        filled = _as_int(r["filled_input"])
+        remain = max(0, input_amount - filled)
+        if remain <= 0:
+            return
+
+        # simplistic synthetic filler selection: pick a route with best score for dst chain
+        dst_chain_id = int(r["dst_chain_id"])
+        output_token = r["output_token"]
+        min_out = _as_int(r["min_output_amount"])
+        max_fee_bps = int(r["max_fee_bps"])
+
+        async with await DB.connect() as c:
+            cur = await c.execute(
+                "SELECT * FROM routes WHERE enabled=1 AND dst_chain_id=? ORDER BY score_bps DESC, updated_ms DESC LIMIT 8",
+                (dst_chain_id,),
+            )
+            routes = await cur.fetchall()
+        if not routes:
+            return
+
+        route = routes[0]
+        route_tag = route["route_tag"]
+        route_score = int(route["score_bps"])
+
+        # create synthetic fill price as some improvement over minimum
