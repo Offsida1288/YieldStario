@@ -1323,3 +1323,38 @@ def _seed_defaults() -> None:
                     "INSERT OR IGNORE INTO routes(route_tag,dst_chain_id,enabled,risk_tier,latency_hint_sec,curator,score_bps,updated_ms) VALUES(?,?,?,?,?,?,?,?)",
                     (_rand_tag("routeLiq", 10), 8453, 1, 140, 42, _rand_tag("cur", 10), 8210, now),
                 )
+                await c.execute(
+                    "INSERT OR IGNORE INTO routes(route_tag,dst_chain_id,enabled,risk_tier,latency_hint_sec,curator,score_bps,updated_ms) VALUES(?,?,?,?,?,?,?,?)",
+                    (_rand_tag("routeXc", 11), 42161, 1, 220, 58, _rand_tag("cur", 10), 7885, now),
+                )
+                await c.commit()
+        LOG.info("seed complete")
+
+    asyncio.run(_seed())
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(prog=CFG.app_name)
+    parser.add_argument("--seed", action="store_true", help="seed dev defaults and exit")
+    parser.add_argument("--print-admin", action="store_true", help="print admin token and exit")
+    parser.add_argument("--host", default=CFG.host)
+    parser.add_argument("--port", type=int, default=CFG.port)
+    args = parser.parse_args()
+
+    if args.print_admin:
+        print(CFG.admin_token)
+        raise SystemExit(0)
+
+    if args.seed:
+        _seed_defaults()
+        raise SystemExit(0)
+
+    try:
+        import uvicorn
+    except Exception as e:
+        print("Missing dependencies; install requirements.txt first.", e)
+        raise
+
+    uvicorn.run("app:app", host=args.host, port=args.port, reload=(CFG.env == "dev"))
