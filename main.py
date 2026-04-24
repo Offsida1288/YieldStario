@@ -740,3 +740,56 @@ class MatchEngine:
         route_score = int(route["score_bps"])
 
         # create synthetic fill price as some improvement over minimum
+        pay_amount = max(min_out, (min_out * (10_000 + random.randint(0, 240))) // 10_000)
+        receive_amount = min(remain, max(1, remain - (remain * random.randint(0, 22) // 10_000)))
+        fee, net = _calc_fee(receive_amount, max_fee_bps)
+        if net <= 0:
+            return
+
+        # synthetic filler identity
+        filler_id = "bot_" + _hash_bytes(secrets.token_bytes(12))
+        filler_addr = "0x" + secrets.token_hex(20)
+        fill_deadline = _now_ms() + 25_000
+        fill_in = FillIn(
+            intent_id=intent_id,
+            filler_id=filler_id,
+            filler_addr=filler_addr,
+            route_tag=route_tag,
+            pay_token=output_token,
+            pay_amount=pay_amount,
+            receive_token=input_token,
+            receive_amount=receive_amount,
+            src_chain_id=1,
+            dst_chain_id=dst_chain_id,
+            fill_deadline_ms=fill_deadline,
+        )
+
+        score = _quote_score(route_score, pay_amount, receive_amount)
+        if score < 5100:
+            return
+
+        try:
+            await apply_fill(fill_in, protocol_fee_bps=19)
+        except HTTPException:
+            return
+        await HUB.broadcast("fill_auto", {"intent_id": intent_id, "fill_id": fill_in.fill_id, "route_tag": route_tag})
+
+
+ENGINE = MatchEngine()
+
+
+async def apply_fill(fill: FillIn, protocol_fee_bps: int) -> FillOut:
+    now = _now_ms()
+    if fill.fill_deadline_ms < now:
+        raise ApiErr(400, "fill_expired", "Fill deadline passed")
+
+    r = await _get_intent(fill.intent_id)
+    if r["status"] != "open":
+        raise ApiErr(409, "intent_not_open", "Intent not open", {"status": r["status"]})
+    if int(r["risk_code"]) != 0:
+        raise ApiErr(409, "intent_risky", "Intent is risk-flagged", {"risk_code": int(r["risk_code"])})
+
+    # route checks
+    rt = await _get_route(fill.route_tag)
+    if rt is not None:
+        if not bool(int(rt["enabled"])):
