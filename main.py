@@ -952,3 +952,56 @@ async def list_tokens(limit: int = 50, offset: int = 0):
 
 
 @app.post("/admin/user", dependencies=[Depends(require_admin)], response_model=UserOut)
+async def create_user(inp: UserIn):
+    user_id = "u_" + uuid.uuid4().hex
+    row = UserOut(user_id=user_id, label=inp.label, created_ms=_now_ms())
+    async with await DB.connect() as c:
+        await c.execute("INSERT INTO users(user_id,label,created_ms) VALUES(?,?,?)", (row.user_id, row.label, row.created_ms))
+        await c.commit()
+    await DB.audit("user_create", row.model_dump())
+    await HUB.broadcast("user_create", row.model_dump())
+    return row
+
+
+@app.get("/users", response_model=list[UserOut])
+async def list_users(limit: int = 50, offset: int = 0):
+    limit, offset = _page_params(limit, offset)
+    async with await DB.connect() as c:
+        cur = await c.execute("SELECT * FROM users ORDER BY created_ms DESC LIMIT ? OFFSET ?", (limit, offset))
+        rows = await cur.fetchall()
+    return [UserOut(user_id=r["user_id"], label=r["label"], created_ms=int(r["created_ms"])) for r in rows]
+
+
+@app.post("/vault/deposit", response_model=VaultRow)
+async def vault_deposit(d: VaultDelta, user_id: str):
+    await _ensure_user(user_id)
+    nb = await _vault_add(user_id, d.token, +d.amount)
+    out = VaultRow(user_id=user_id, token=d.token, balance=nb, updated_ms=_now_ms())
+    await DB.audit("vault_deposit", out.model_dump())
+    await HUB.broadcast("vault_deposit", out.model_dump())
+    return out
+
+
+@app.post("/vault/withdraw", response_model=VaultRow)
+async def vault_withdraw(d: VaultDelta, user_id: str):
+    await _ensure_user(user_id)
+    nb = await _vault_add(user_id, d.token, -d.amount)
+    out = VaultRow(user_id=user_id, token=d.token, balance=nb, updated_ms=_now_ms())
+    await DB.audit("vault_withdraw", out.model_dump())
+    await HUB.broadcast("vault_withdraw", out.model_dump())
+    return out
+
+
+@app.get("/vault", response_model=list[VaultRow])
+async def vault_list(user_id: str):
+    await _ensure_user(user_id)
+    async with await DB.connect() as c:
+        cur = await c.execute("SELECT * FROM vault WHERE user_id=? ORDER BY token ASC", (user_id,))
+        rows = await cur.fetchall()
+    return [VaultRow(user_id=r["user_id"], token=r["token"], balance=_as_int(r["balance"]), updated_ms=int(r["updated_ms"])) for r in rows]
+
+
+@app.post("/intent", response_model=IntentOut)
+async def post_intent(inp: IntentIn):
+    await _ensure_user(inp.maker_id)
+    now = _now_ms()
