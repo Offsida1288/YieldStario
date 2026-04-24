@@ -1111,3 +1111,56 @@ async def list_intents(status: str = "open", limit: int = 50, offset: int = 0):
 
 @app.get("/intent/{intent_id}", response_model=IntentOut)
 async def get_intent(intent_id: str):
+    r = await _get_intent(intent_id)
+    return await _intent_row_to_out(r)
+
+
+@app.post("/intent/{intent_id}/cancel", response_model=IntentOut)
+async def cancel_intent(intent_id: str, user_id: str):
+    await _ensure_user(user_id)
+    r = await _get_intent(intent_id)
+    if r["maker_id"] != user_id:
+        raise ApiErr(403, "not_maker", "Only maker may cancel")
+    if r["status"] != "open":
+        raise ApiErr(409, "not_open", "Intent is not open", {"status": r["status"]})
+    now = _now_ms()
+    if int(r["cancel_earliest_ms"]) > now:
+        raise ApiErr(409, "cancel_too_soon", "Cancel window not reached", {"cancel_earliest_ms": int(r["cancel_earliest_ms"])})
+    async with await DB.connect() as c:
+        await c.execute("UPDATE intents SET status='cancelled' WHERE intent_id=?", (intent_id,))
+        await c.commit()
+    r2 = await _get_intent(intent_id)
+    out = await _intent_row_to_out(r2)
+    await DB.audit("intent_cancel", {"intent_id": intent_id, "user_id": user_id})
+    await HUB.broadcast("intent_cancel", out.model_dump())
+    return out
+
+
+@app.post("/admin/intent/{intent_id}/risk", dependencies=[Depends(require_admin)], response_model=IntentOut)
+async def set_intent_risk(intent_id: str, code: int = 0):
+    if code < 0 or code > 2**31 - 1:
+        raise ApiErr(400, "bad_code", "risk code out of range")
+    now = _now_ms()
+    async with await DB.connect() as c:
+        await c.execute("UPDATE intents SET risk_code=?, risk_at_ms=? WHERE intent_id=?", (int(code), now, intent_id))
+        await c.commit()
+    out = await _intent_row_to_out(await _get_intent(intent_id))
+    await DB.audit("intent_risk", {"intent_id": intent_id, "code": code})
+    await HUB.broadcast("intent_risk", out.model_dump())
+    return out
+
+
+@app.post("/admin/route", dependencies=[Depends(require_admin)], response_model=RouteOut)
+async def upsert_route(inp: RouteIn):
+    now = _now_ms()
+    async with await DB.connect() as c:
+        await c.execute(
+            "INSERT INTO routes(route_tag,dst_chain_id,enabled,risk_tier,latency_hint_sec,curator,score_bps,updated_ms) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(route_tag) DO UPDATE SET dst_chain_id=excluded.dst_chain_id, enabled=excluded.enabled, risk_tier=excluded.risk_tier, latency_hint_sec=excluded.latency_hint_sec, curator=excluded.curator, score_bps=excluded.score_bps, updated_ms=excluded.updated_ms",
+            (
+                inp.route_tag,
+                int(inp.dst_chain_id),
+                1 if inp.enabled else 0,
+                int(inp.risk_tier),
+                int(inp.latency_hint_sec),
+                inp.curator,
