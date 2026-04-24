@@ -634,3 +634,56 @@ async def _fill_row_to_out(r: aiosqlite.Row) -> FillOut:
         filler_addr=r["filler_addr"],
         route_tag=r["route_tag"],
         pay_token=r["pay_token"],
+        pay_amount=_as_int(r["pay_amount"]),
+        receive_token=r["receive_token"],
+        receive_amount=_as_int(r["receive_amount"]),
+        src_chain_id=int(r["src_chain_id"]),
+        dst_chain_id=int(r["dst_chain_id"]),
+        fill_deadline_ms=int(r["fill_deadline_ms"]),
+        created_ms=int(r["created_ms"]),
+        fee_paid=_as_int(r["fee_paid"]),
+        status=r["status"],
+    )
+
+
+async def _route_row_to_out(r: aiosqlite.Row) -> RouteOut:
+    return RouteOut(
+        route_tag=r["route_tag"],
+        dst_chain_id=int(r["dst_chain_id"]),
+        enabled=bool(int(r["enabled"])),
+        risk_tier=int(r["risk_tier"]),
+        latency_hint_sec=int(r["latency_hint_sec"]),
+        curator=r["curator"],
+        score_bps=int(r["score_bps"]),
+        updated_ms=int(r["updated_ms"]),
+    )
+
+
+class MatchEngine:
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._running = False
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        async with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._task = asyncio.create_task(self._loop(), name="ys-match-loop")
+
+    async def stop(self) -> None:
+        async with self._lock:
+            self._running = False
+            if self._task:
+                self._task.cancel()
+                self._task = None
+
+    async def _loop(self) -> None:
+        LOG.info("match loop started tick_ms=%s", CFG.match_tick_ms)
+        while self._running:
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
