@@ -157,3 +157,56 @@ def require_rate(req: Request) -> None:
 def require_admin(req: Request) -> None:
     tok = req.headers.get("x-ys-admin", "")
     if not tok or tok != CFG.admin_token:
+        raise ApiErr(401, "admin_required", "Missing or invalid admin token")
+
+
+def mk_hmac(payload: bytes) -> str:
+    mac = hmac.new(CFG.hmac_key, payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
+
+
+def verify_hmac(payload: bytes, mac_b64: str) -> bool:
+    want = mk_hmac(payload)
+    return hmac.compare_digest(want, mac_b64)
+
+
+class Db:
+    def __init__(self, path: str):
+        self.path = path
+        self._init_lock = asyncio.Lock()
+
+    async def connect(self) -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(self.path)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA journal_mode=WAL;")
+        await conn.execute("PRAGMA synchronous=NORMAL;")
+        await conn.execute("PRAGMA foreign_keys=ON;")
+        return conn
+
+    async def init(self) -> None:
+        async with self._init_lock:
+            async with await self.connect() as c:
+                await c.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS tokens(
+                      token TEXT PRIMARY KEY,
+                      symbol TEXT NOT NULL,
+                      decimals INTEGER NOT NULL,
+                      updated_ms INTEGER NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS users(
+                      user_id TEXT PRIMARY KEY,
+                      label TEXT NOT NULL,
+                      created_ms INTEGER NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS vault(
+                      user_id TEXT NOT NULL,
+                      token TEXT NOT NULL,
+                      balance TEXT NOT NULL,
+                      updated_ms INTEGER NOT NULL,
+                      PRIMARY KEY(user_id, token),
+                      FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                    );
+                    CREATE TABLE IF NOT EXISTS intents(
+                      intent_id TEXT PRIMARY KEY,
+                      maker_id TEXT NOT NULL,
