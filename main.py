@@ -104,3 +104,56 @@ class AppConfig:
             raise RuntimeError("match tick too low")
 
 
+CFG = AppConfig()
+CFG.validate()
+
+
+def _logger() -> logging.Logger:
+    lg = logging.getLogger(CFG.app_name)
+    if lg.handlers:
+        return lg
+    lg.setLevel(logging.INFO if CFG.env != "dev" else logging.DEBUG)
+    h = logging.StreamHandler()
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s | %(message)s"))
+    lg.addHandler(h)
+    return lg
+
+
+LOG = _logger()
+
+
+class RateBucket:
+    __slots__ = ("limit", "window_s", "_hits")
+
+    def __init__(self, limit: int, window_s: int = 60):
+        self.limit = limit
+        self.window_s = window_s
+        self._hits: dict[str, list[int]] = {}
+
+    def allow(self, key: str) -> bool:
+        now = int(time.time())
+        w0 = now - self.window_s
+        arr = self._hits.get(key)
+        if arr is None:
+            self._hits[key] = [now]
+            return True
+        while arr and arr[0] < w0:
+            arr.pop(0)
+        if len(arr) >= self.limit:
+            return False
+        arr.append(now)
+        return True
+
+
+RATES = RateBucket(CFG.public_rate_limit_rpm)
+
+
+def require_rate(req: Request) -> None:
+    ip = req.client.host if req.client else "unknown"
+    if not RATES.allow(ip):
+        raise ApiErr(429, "rate_limited", "Too many requests")
+
+
+def require_admin(req: Request) -> None:
+    tok = req.headers.get("x-ys-admin", "")
+    if not tok or tok != CFG.admin_token:
