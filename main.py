@@ -210,3 +210,56 @@ class Db:
                     CREATE TABLE IF NOT EXISTS intents(
                       intent_id TEXT PRIMARY KEY,
                       maker_id TEXT NOT NULL,
+                      maker_addr TEXT NOT NULL,
+                      input_token TEXT NOT NULL,
+                      input_amount TEXT NOT NULL,
+                      output_token TEXT NOT NULL,
+                      min_output_amount TEXT NOT NULL,
+                      dst_chain_id INTEGER NOT NULL,
+                      dst_receiver TEXT NOT NULL,
+                      expiry_ms INTEGER NOT NULL,
+                      nonce INTEGER NOT NULL,
+                      strategy_tag TEXT NOT NULL,
+                      max_fee_bps INTEGER NOT NULL,
+                      created_ms INTEGER NOT NULL,
+                      cancel_earliest_ms INTEGER NOT NULL,
+                      status TEXT NOT NULL,
+                      filled_input TEXT NOT NULL,
+                      risk_code INTEGER NOT NULL,
+                      risk_at_ms INTEGER NOT NULL,
+                      UNIQUE(maker_id, nonce)
+                    );
+                    CREATE TABLE IF NOT EXISTS fills(
+                      fill_id TEXT PRIMARY KEY,
+                      intent_id TEXT NOT NULL,
+                      filler_id TEXT NOT NULL,
+                      filler_addr TEXT NOT NULL,
+                      route_tag TEXT NOT NULL,
+                      pay_token TEXT NOT NULL,
+                      pay_amount TEXT NOT NULL,
+                      receive_token TEXT NOT NULL,
+                      receive_amount TEXT NOT NULL,
+                      src_chain_id INTEGER NOT NULL,
+                      dst_chain_id INTEGER NOT NULL,
+                      fill_deadline_ms INTEGER NOT NULL,
+                      created_ms INTEGER NOT NULL,
+                      fee_paid TEXT NOT NULL,
+                      status TEXT NOT NULL,
+                      FOREIGN KEY(intent_id) REFERENCES intents(intent_id) ON DELETE CASCADE
+                    );
+                    CREATE TABLE IF NOT EXISTS routes(
+                      route_tag TEXT PRIMARY KEY,
+                      dst_chain_id INTEGER NOT NULL,
+                      enabled INTEGER NOT NULL,
+                      risk_tier INTEGER NOT NULL,
+                      latency_hint_sec INTEGER NOT NULL,
+                      curator TEXT NOT NULL,
+                      score_bps INTEGER NOT NULL,
+                      updated_ms INTEGER NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS audit(
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      at_ms INTEGER NOT NULL,
+                      kind TEXT NOT NULL,
+                      payload_json TEXT NOT NULL
+                    );
