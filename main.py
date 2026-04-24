@@ -581,3 +581,56 @@ async def _vault_set(user_id: str, token: str, new_balance: int) -> None:
             "ON CONFLICT(user_id, token) DO UPDATE SET balance=excluded.balance, updated_ms=excluded.updated_ms",
             (user_id, token, _as_str_int(new_balance), _now_ms()),
         )
+        await c.commit()
+
+
+async def _vault_add(user_id: str, token: str, delta: int) -> int:
+    bal = await _vault_get(user_id, token)
+    nb = bal + delta
+    if nb < 0:
+        raise ApiErr(400, "vault_low", "Insufficient vault balance", {"token": token, "need": -delta, "have": bal})
+    await _vault_set(user_id, token, nb)
+    return nb
+
+
+def _page_params(limit: int, offset: int) -> tuple[int, int]:
+    if limit <= 0:
+        limit = 50
+    limit = min(limit, CFG.max_page_size)
+    if offset < 0:
+        offset = 0
+    return limit, offset
+
+
+async def _intent_row_to_out(r: aiosqlite.Row) -> IntentOut:
+    return IntentOut(
+        intent_id=r["intent_id"],
+        maker_id=r["maker_id"],
+        maker_addr=r["maker_addr"],
+        input_token=r["input_token"],
+        input_amount=_as_int(r["input_amount"]),
+        output_token=r["output_token"],
+        min_output_amount=_as_int(r["min_output_amount"]),
+        dst_chain_id=int(r["dst_chain_id"]),
+        dst_receiver=r["dst_receiver"],
+        expiry_ms=int(r["expiry_ms"]),
+        nonce=int(r["nonce"]),
+        strategy_tag=r["strategy_tag"],
+        max_fee_bps=int(r["max_fee_bps"]),
+        created_ms=int(r["created_ms"]),
+        cancel_earliest_ms=int(r["cancel_earliest_ms"]),
+        status=r["status"],
+        filled_input=_as_int(r["filled_input"]),
+        risk_code=int(r["risk_code"]),
+        risk_at_ms=int(r["risk_at_ms"]),
+    )
+
+
+async def _fill_row_to_out(r: aiosqlite.Row) -> FillOut:
+    return FillOut(
+        fill_id=r["fill_id"],
+        intent_id=r["intent_id"],
+        filler_id=r["filler_id"],
+        filler_addr=r["filler_addr"],
+        route_tag=r["route_tag"],
+        pay_token=r["pay_token"],
