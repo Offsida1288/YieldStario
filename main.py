@@ -899,3 +899,56 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     await ENGINE.stop()
+    LOG.info("shutdown ok")
+
+
+@app.middleware("http")
+async def _rate(req: Request, call_next):
+    if req.url.path.startswith("/admin/"):
+        pass
+    else:
+        require_rate(req)
+    return await call_next(req)
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True, "at": _utc_iso(), "env": CFG.env, "app": CFG.app_name}
+
+
+@app.get("/meta")
+async def meta():
+    return {
+        "app": CFG.app_name,
+        "env": CFG.env,
+        "quote_ttl_ms": CFG.quote_ttl_ms,
+        "match_tick_ms": CFG.match_tick_ms,
+        "max_page_size": CFG.max_page_size,
+        "server_time_ms": _now_ms(),
+    }
+
+
+@app.post("/admin/token", dependencies=[Depends(require_admin)])
+async def upsert_token(tok: TokenIn):
+    async with await DB.connect() as c:
+        await c.execute(
+            "INSERT INTO tokens(token,symbol,decimals,updated_ms) VALUES(?,?,?,?) "
+            "ON CONFLICT(token) DO UPDATE SET symbol=excluded.symbol, decimals=excluded.decimals, updated_ms=excluded.updated_ms",
+            (tok.token, tok.symbol, int(tok.decimals), _now_ms()),
+        )
+        await c.commit()
+    await DB.audit("token_upsert", tok.model_dump())
+    await HUB.broadcast("token_upsert", tok.model_dump())
+    return {"ok": True}
+
+
+@app.get("/tokens", response_model=list[TokenOut])
+async def list_tokens(limit: int = 50, offset: int = 0):
+    limit, offset = _page_params(limit, offset)
+    async with await DB.connect() as c:
+        cur = await c.execute("SELECT * FROM tokens ORDER BY token ASC LIMIT ? OFFSET ?", (limit, offset))
+        rows = await cur.fetchall()
+    return [TokenOut(token=r["token"], symbol=r["symbol"], decimals=int(r["decimals"]), updated_ms=int(r["updated_ms"])) for r in rows]
+
+
+@app.post("/admin/user", dependencies=[Depends(require_admin)], response_model=UserOut)
