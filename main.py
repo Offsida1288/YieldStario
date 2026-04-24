@@ -316,3 +316,56 @@ class VaultDelta(BaseModel):
 
 class VaultRow(BaseModel):
     user_id: str
+    token: str
+    balance: int
+    updated_ms: int
+
+
+class IntentIn(BaseModel):
+    maker_id: str
+    maker_addr: str = Field(..., min_length=6, max_length=128)
+    input_token: str
+    input_amount: int = Field(..., ge=1)
+    output_token: str
+    min_output_amount: int = Field(..., ge=1)
+    dst_chain_id: int = Field(..., ge=1)
+    dst_receiver: str = Field(..., min_length=6, max_length=128)
+    expiry_ms: int = Field(..., ge=1)
+    nonce: int = Field(..., ge=0)
+    strategy_tag: str = Field(..., min_length=3, max_length=96)
+    max_fee_bps: int = Field(..., ge=0, le=77)
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def intent_id(self) -> str:
+        payload = _stable_json(
+            {
+                "maker_addr": self.maker_addr,
+                "input_token": self.input_token,
+                "input_amount": self.input_amount,
+                "output_token": self.output_token,
+                "min_output_amount": self.min_output_amount,
+                "dst_chain_id": self.dst_chain_id,
+                "dst_receiver": self.dst_receiver,
+                "expiry_ms": self.expiry_ms,
+                "nonce": self.nonce,
+                "strategy_tag": self.strategy_tag,
+                "max_fee_bps": self.max_fee_bps,
+            }
+        )
+        return "it_" + _hash_bytes(payload)
+
+
+class IntentOut(BaseModel):
+    intent_id: str
+    maker_id: str
+    maker_addr: str
+    input_token: str
+    input_amount: int
+    output_token: str
+    min_output_amount: int
+    dst_chain_id: int
+    dst_receiver: str
+    expiry_ms: int
+    nonce: int
+    strategy_tag: str
