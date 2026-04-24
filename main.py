@@ -1164,3 +1164,56 @@ async def upsert_route(inp: RouteIn):
                 int(inp.risk_tier),
                 int(inp.latency_hint_sec),
                 inp.curator,
+                int(inp.score_bps),
+                now,
+            ),
+        )
+        await c.commit()
+    out = RouteOut(**inp.model_dump(), updated_ms=now)
+    await DB.audit("route_upsert", out.model_dump())
+    await HUB.broadcast("route_upsert", out.model_dump())
+    return out
+
+
+@app.get("/routes", response_model=list[RouteOut])
+async def list_routes(dst_chain_id: int | None = None, limit: int = 50, offset: int = 0):
+    limit, offset = _page_params(limit, offset)
+    async with await DB.connect() as c:
+        if dst_chain_id is None:
+            cur = await c.execute("SELECT * FROM routes ORDER BY score_bps DESC, updated_ms DESC LIMIT ? OFFSET ?", (limit, offset))
+        else:
+            cur = await c.execute(
+                "SELECT * FROM routes WHERE dst_chain_id=? ORDER BY score_bps DESC, updated_ms DESC LIMIT ? OFFSET ?",
+                (int(dst_chain_id), limit, offset),
+            )
+        rows = await cur.fetchall()
+    return [await _route_row_to_out(r) for r in rows]
+
+
+@app.post("/quote", response_model=QuoteResponse)
+async def quote(req: QuoteRequest):
+    intent = await _get_intent(req.intent_id)
+    if intent["status"] != "open":
+        raise ApiErr(409, "not_open", "Intent not open")
+    rt = await _get_route(req.route_tag)
+    if rt is not None:
+        if not bool(int(rt["enabled"])):
+            raise ApiErr(409, "route_disabled", "Route disabled")
+        if int(rt["dst_chain_id"]) != int(intent["dst_chain_id"]):
+            raise ApiErr(400, "route_mismatch", "Route dst chain mismatch")
+    route_score = int(rt["score_bps"]) if rt is not None else 5001
+    score = _quote_score(route_score, req.pay_amount, req.receive_amount)
+    expires = _now_ms() + CFG.quote_ttl_ms
+    quote_id = "q_" + uuid.uuid4().hex
+    payload = {
+        "quote_id": quote_id,
+        "intent_id": req.intent_id,
+        "route_tag": req.route_tag,
+        "filler_id": req.filler_id,
+        "pay_amount": req.pay_amount,
+        "receive_amount": req.receive_amount,
+        "score_bps": score,
+        "expires_ms": expires,
+    }
+    mac = mk_hmac(_stable_json(payload))
+    out = QuoteResponse(**payload, mac=mac)
