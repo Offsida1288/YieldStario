@@ -1270,3 +1270,56 @@ async def list_fills(intent_id: str | None = None, limit: int = 50, offset: int 
 
 
 @app.websocket("/ws")
+async def ws(ws: WebSocket):
+    await ws.accept()
+    await HUB.add(ws)
+    try:
+        await ws.send_json({"kind": "hello", "at_ms": _now_ms(), "payload": {"app": CFG.app_name}})
+        while True:
+            data = await ws.receive_text()
+            if not data:
+                continue
+            if data.strip().lower() in ("ping", "p"):
+                await ws.send_json({"kind": "pong", "at_ms": _now_ms(), "payload": {}})
+            else:
+                await ws.send_json({"kind": "echo", "at_ms": _now_ms(), "payload": {"text": data[:2048]}})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await HUB.remove(ws)
+
+
+def _install_signal_handlers() -> None:
+    loop = asyncio.get_event_loop()
+    stop_ev = asyncio.Event()
+
+    def _stop(*_):
+        if not stop_ev.is_set():
+            stop_ev.set()
+
+    for s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(s, _stop)
+        except NotImplementedError:
+            pass
+
+
+def _seed_defaults() -> None:
+    async def _seed():
+        await DB.init()
+        # seed a couple of routes and tokens in dev to make UI immediately usable
+        if CFG.env == "dev":
+            async with await DB.connect() as c:
+                now = _now_ms()
+                await c.execute(
+                    "INSERT OR IGNORE INTO tokens(token,symbol,decimals,updated_ms) VALUES(?,?,?,?)",
+                    ("USDC", "USDC", 6, now),
+                )
+                await c.execute(
+                    "INSERT OR IGNORE INTO tokens(token,symbol,decimals,updated_ms) VALUES(?,?,?,?)",
+                    ("WETH", "WETH", 18, now),
+                )
+                await c.execute(
+                    "INSERT OR IGNORE INTO routes(route_tag,dst_chain_id,enabled,risk_tier,latency_hint_sec,curator,score_bps,updated_ms) VALUES(?,?,?,?,?,?,?,?)",
+                    (_rand_tag("routeLiq", 10), 8453, 1, 140, 42, _rand_tag("cur", 10), 8210, now),
+                )
